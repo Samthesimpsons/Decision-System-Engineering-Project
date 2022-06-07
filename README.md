@@ -11,7 +11,7 @@ Read the final presentation for more information. Also do check out our applicat
 Note the MySQL database was hosted on AWS RDS which has been terminated. Further updates will be done.
 
 **Requirements:**
-1. R (RsShiny, Tidyverse)
+1. R (RShiny, Tidyverse)
 
 ## Directories
 ```bash
