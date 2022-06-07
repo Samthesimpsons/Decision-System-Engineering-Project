@@ -1,0 +1,14 @@
+name: GlowUp
+title: GlowUp
+username:
+account: samuelsim
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 3948674
+bundleId: 4486594
+url: https://samuelsim.shinyapps.io/GlowUp/
+when: 1618748644.29797
+lastSyncTime: 1618748644.29797
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: .RData

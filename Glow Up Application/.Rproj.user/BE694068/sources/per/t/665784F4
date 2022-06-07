@@ -1,0 +1,24 @@
+{
+    "id": "665784F4",
+    "path": "C:/Users/samue/Desktop/Coding/app.R",
+    "project_path": "app.R",
+    "type": "r_source",
+    "hash": "2058029750",
+    "contents": "",
+    "dirty": false,
+    "created": 1617427992645.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "cursorPosition": "23,53",
+        "scrollLine": "8"
+    },
+    "folds": "7|31|15|0|\n47|39|58|0|\n",
+    "lastKnownWriteTime": 1617431914,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1617431914422,
+    "read_only": false,
+    "read_only_alternatives": []
+}

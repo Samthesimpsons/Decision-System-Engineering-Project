@@ -1,0 +1,1073 @@
+# At the beginning of any R session, record your AWS database password:
+source("setAWSPassword.R")
+source("usePackages.R")
+pkgnames <- c("tidyverse","dplyr","sortable","shiny","shinyjs","DBI","jsonlite", "shinydashboard", "shinydashboardPlus","rsconnect", "stringr", "htmlwidgets")
+loadPkgs(pkgnames)
+
+#################################### HELPER FUNCTIONS  #################################### 
+
+getAWSConnection <- function(){
+  conn <- dbConnect(
+    drv = RMySQL::MySQL(),
+    dbname = "student070",
+    host = "esddbinstance-1.ceo4ehzjeeg0.ap-southeast-1.rds.amazonaws.com",
+    username = "student070",
+    password = getOption("AWSPassword"))
+  conn
+}
+
+# Get products for chosen skintype
+getProductList <- function(categoryname,skintype){
+  #open the connection
+  conn <- getAWSConnection()
+  querytemplate <- "SELECT * FROM ProductTable WHERE skinname=?id1 AND categoryname=?id2;"
+  query<- sqlInterpolate(conn, querytemplate,id1=skintype,id2=categoryname)
+  products <- dbGetQuery(conn, query)
+  
+  #Close the connection
+  dbDisconnect(conn)
+  products
+}
+
+# Get description for selected product
+getProductDescription <- function(productname){
+  #open the connection
+  conn <- getAWSConnection()
+  querytemplate <- "SELECT productdescription FROM ProductTable WHERE productname=?id1;"
+  query<- sqlInterpolate(conn, querytemplate,id1=productname)
+  products <- dbGetQuery(conn, query)
+  
+  #Close the connection
+  dbDisconnect(conn)
+  products
+}
+
+# Get description for skin type
+getSkinDescription <- function(skintype){
+  #open the connection
+  conn <- getAWSConnection()
+  querytemplate <- "SELECT skindescription FROM SkinTable WHERE skinname=?id1;"
+  query<- sqlInterpolate(conn, querytemplate,id1=skintype)
+  skin <- dbGetQuery(conn, query)
+  
+  #Close the connection
+  dbDisconnect(conn)
+  skin
+}
+
+# Get description for ordering tips
+getOrderTipsDescription <- function(randomnumber){
+  #open the connection
+  conn <- getAWSConnection()
+  querytemplate <- "SELECT OrderTipsDesc FROM OrderTipsTable WHERE OrderTipsId=?id1;"
+  query<- sqlInterpolate(conn, querytemplate,id1=randomnumber)
+  tips <- dbGetQuery(conn, query)
+  
+  #Close the connection
+  dbDisconnect(conn)
+  tips
+}
+
+# Get pricing for selected product
+getProductPrice <- function(productname){
+  #open the connection
+  conn <- getAWSConnection()
+  querytemplate <- "SELECT price FROM ProductTable WHERE productname=?id1;"
+  query<- sqlInterpolate(conn, querytemplate,id1=productname)
+  result <- dbGetQuery(conn, query)
+  
+  #Close the connection
+  dbDisconnect(conn)
+  result
+}
+
+# Get category description for chosen category
+getCategoryDetails <- function(category){
+  #open the connection
+  conn <- getAWSConnection()
+  querytemplate <- "SELECT * FROM CategoryTable WHERE categoryname=?id1;"
+  query<- sqlInterpolate(conn, querytemplate,id1=category)
+  categoryinfo <- dbGetQuery(conn, query)
+  
+  #Close the connection
+  dbDisconnect(conn)
+  desc  <- categoryinfo$categorydescription
+  desc
+}
+
+# Hit Budget or already purchased item Modal
+duplicateModal <- function(){
+  modalDialog(
+    title = NULL,
+    h3("You have already selected/purchased an item from the same category or you have hit your budget."),
+    h3("Please choose another category or undo the current purchase."),
+    easyClose = TRUE,
+    footer = NULL
+  )
+}
+
+# category in the cart is empty Modal
+emptyModal <- function(){
+  modalDialog(
+    title = NULL,
+    h3("No product of the category has been purchased yet."),
+    easyClose = TRUE,
+    footer = NULL
+  )
+}
+
+# Get score for selected product
+getProductScore <- function(productname){
+  #open the connection
+  conn <- getAWSConnection()
+  querytemplate <- "SELECT facescore FROM ProductTable WHERE productname=?id1;"
+  query<- sqlInterpolate(conn, querytemplate,id1=productname)
+  score <- dbGetQuery(conn, query)
+  
+  #Close the connection
+  dbDisconnect(conn)
+  score
+}
+
+# Get order score for applied category
+getOrderScore <- function(category, categoryorder){
+  #open the connection
+  conn <- getAWSConnection()
+  querytemplate <- "SELECT orderscore FROM CategoryOrderScoreTable WHERE categoryname=?id1 AND categoryorder=?id2;"
+  query<- sqlInterpolate(conn, querytemplate, id1=category, id2=categoryorder)
+  print(query)
+  orderscore <- dbGetQuery(conn, query)
+  
+  #Close the connection
+  dbDisconnect(conn)
+  orderscore
+}
+
+# create history dataframe
+prephistory <- function(){
+  historydf <- data.frame(matrix(ncol = 9, nrow = 0))
+  x <- c("moisturizer_order", "cleanser_order", "exfoliater_order", "serum_order", "toner_order", "sunscreen_order", 
+         "score", "actioncount", "lastclicked")
+  colnames(historydf) <- x
+  historydf
+}
+
+# finish game Modal (TO-DO: THRESHOLD VALUE FOR COMPLEMENT)
+finishModal <- function(listoforders, finalscore, historydf){
+  #print(listoforders)
+  df <- historydf[nrow(historydf),] %>% select(-c(score, actioncount, lastclicked))
+  categorynames <- colnames(df)
+  df <- df %>% 
+    pivot_longer(categorynames, "category", values_to="categoryorder")  %>% 
+    filter(categoryorder != 0) %>% 
+    mutate(product=listoforders, category=gsub('.{6}$', '', category)) %>%
+    arrange(desc(-categoryorder))
+  print(df)
+  
+  modalDialog(
+    title = NULL,
+    h1("Finish"),
+    h2("In order of usage, your products chosen are: "),
+    lapply(1:nrow(df), function(i) h3(paste0(i, ". ", str_to_title(df$category[[i]]), ": ", df$product[[i]]))),
+    h2(paste0("Final score: ", finalscore)),
+    h3(" "),
+    actionButton("notdonebtn", "No I'm not done yet"),
+    actionButton("replaybtn", "Play again", style="color: #fff; background-color: #337ab7; border-color: #2e6da4"),
+    footer = NULL
+  )
+}
+
+#################################### UI #################################### 
+
+ui <- dashboardPage(
+  dashboardHeader(title = "Glow Up!"),
+  dashboardSidebar(
+    width = 0, collapsed = FALSE, sidebarMenu(id = "tabs",
+    menuItem("Choose Your Avatar",tabName ="start"),
+    menuItem("Shop", tabName = "shop"),
+    menuItem("Apply Products",tabName ="interact")),
+    tags$script(JS("document.getElementsByClassName('sidebar-toggle')[0].style.visibility = 'hidden';"))
+    ),
+  dashboardBody(
+    tabItems(
+      tabItem(tabName = "start",
+              fluidRow(class="center",
+                       column(width = 12,
+                              h2(strong("Welcome! First, Customise Your Avatar.")),
+                              h3(strong("Set Your Gender:")),
+                              selectInput("selectGender", "", c("Male","Female")),
+                              h3(strong("Set Your Skin Type:")),
+                              strong(htmlOutput("skindesc")),
+                              selectInput("selectSkin", "", c("Oily", "Dry","Normal")),
+                              h3(strong("Set Your Budget:")),
+                              h5(strong("Input your budget, round off to nearest dollar")),
+                              h5(strong("Note: Changing your budget will reset the game")),
+                              textInput("wallet", ""),
+                              actionButton("createConfirm", "Let's get started!", style="color: #fff; background-color: #337ab7; border-color: #2e6da4")))),
+      tabItem(tabName = "shop",
+              fluidRow(
+                column(width=5, id="test",
+                       h3(strong("Click on each Category to know more and to shop.")),
+                       actionButton(inputId="moisturizer",label = NULL,style = "width: 187.5px; height: 300px; background: url('moisturiser.png');  background-size: cover; background-position: center;"),
+                       actionButton(inputId="cleanser",label = NULL,style = "width: 187.5px; height: 300px; background: url('cleanser.png');  background-size: cover; background-position: center;"),
+                       actionButton(inputId="exfoliater",label = NULL,style = "width: 187.5px; height: 300px; background: url('exfoliater.png');  background-size: cover; background-position: center;")
+                       ),
+                ),
+              fluidRow(
+                column(width=5,
+                       actionButton(inputId="serum",label = NULL,style = "width: 187.5px; height: 300px; background: url('serum.png');  background-size: cover; background-position: center;"),
+                       actionButton(inputId="toner",label = NULL,style = "width: 187.5px; height: 300px; background: url('toner.png');  background-size: cover; background-position: center;"),
+                       actionButton(inputId="sunscreen",label = NULL,style = "width: 187.5px; height: 300px; background: url('sunscreen.png');  background-size: cover; background-position: center;")
+                       ),
+                column(width = 7,
+                       box(title = strong("Your cart: Click to see each chosen product"),
+                           width = 10,
+                           actionButton(inputId="product1",label = NULL, style="width: 93.75px; height: 150px; background: url('moisturiser.png');  background-size: cover; background-position: center;"),
+                           actionButton(inputId="product2",label = NULL, style="width: 93.75px; height: 150px; background: url('cleanser.png');  background-size: cover; background-position: center;"),
+                           actionButton(inputId="product3",label = NULL, style="width: 93.75px; height: 150px; background: url('exfoliater.png');  background-size: cover; background-position: center;"),
+                           actionButton(inputId="product4",label = NULL, style="width: 93.75px; height: 150px; background: url('serum.png');  background-size: cover; background-position: center;"),
+                           actionButton(inputId="product5",label = NULL, style="width: 93.75px; height: 150px; background: url('toner.png');  background-size: cover; background-position: center;"),
+                           actionButton(inputId="product6",label = NULL, style="width: 93.75px; height: 150px; background: url('sunscreen.png');  background-size: cover; background-position: center;"),
+                           br(),
+                           htmlOutput("budget"),
+                           actionButton("editcart", "Edit cart"))
+                       )
+                ),
+              fluidRow(
+                column(width = 12, 
+                       h3(strong("Once the cart has been filled, apply the products on your avatar! Or you can go back to change your avatar.")),
+                       actionButton("changeAvatar", "Change my avatar", style="color: #fff; background-color: #337ab7; border-color: #2e6da4"),
+                       actionButton("confirmproducts", "Apply on Avatar", style="color: #fff; background-color: #337ab7; border-color: #2e6da4"))
+              )
+              ),
+      tabItem(tabName = "interact",
+              fluidRow(useShinyjs(),
+                       class="center",
+                       column(width=6,
+                              h3(strong("Check your Avatar facescore.")),
+                              uiOutput("avatar"),
+                              h3(strong("Face score:")),
+                              htmlOutput("facescore"),
+                              h3(strong("The order affects your facescore!")),
+                              uiOutput("ordering")
+                              ),
+                       column(width = 6,
+                              uiOutput("active_side_1"),
+                              flipBox(
+                                id = "flipbox1",
+                                width = 12,
+                                front = div(
+                                  class = "text-center",
+                                  h1("Click for some ordering tips"),
+                                  img(src = "https://www.flaticon.com/svg/vstatic/svg/4498/4498323.svg",
+                                      height = "300px",
+                                      width = "100%")
+                                ),
+                                back = div(
+                                  class = "text-center",
+                                  height = "300px",
+                                  width = "100%",
+                                  h1("Flip on click"),
+                                  p("More information....")
+                                )
+                              )
+                       )
+                       ),
+              fluidRow(
+                br(),
+                column(width = 12, 
+                       actionButton("changeShoppingList", "Go Back to Shopping Page", style="color: #fff; background-color: #337ab7; border-color: #2e6da4"),
+                       uiOutput("finish"))
+              )
+              )
+      )
+    )
+  )
+    
+
+
+
+#################################### SERVER #################################### 
+
+server <- function(input, output, session) {
+  #state_xxx might be redundant, can optimize at the later stage
+  vals <- reactiveValues(state_moisturizer=0,state_cleanser=0,state_exfoliater=0,state_serum=0,state_toner=0,state_sunscreen=0,
+                         moisturizer="",cleanser="",exfoliater="",serum="",toner="",sunscreen="",
+                         gender=NULL, skintype=NULL, historydf=prephistory(), listoforders=NULL,
+                         occupied=0, score=0, budget=0, lastclicked=NULL, actioncount=0, selectedcount=6,
+                         moisturizer_order=0, cleanser_order=0,exfoliater_order=0,serum_order=0,toner_order=0,sunscreen_order=0,
+                         randomnumber=0)
+  
+  # observe a change in gender
+  observeEvent(input$selectGender,{
+    vals$gender <- input$selectGender
+    print(vals$gender)
+    
+    output$avatar <- renderUI({
+      if(vals$gender == "Male"){            
+        tags$img(src = "male.png",width= 160 , height = 200)
+      }                                        
+      else if(vals$gender == "Female"){
+        tags$img(src = "female.png",width= 160 , height = 200)
+      }
+    })
+  })
+  
+  # observe a change in skintype
+  observeEvent(input$selectSkin,{
+    vals$skintype <- input$selectSkin
+  print(vals$skintype)
+  })
+
+  # observe a change in budget which will reset the game
+  observeEvent(input$wallet,{
+    vals$state_moisturizer<-0
+    vals$state_cleanser<-0
+    vals$state_exfoliater<-0
+    vals$state_serum<-0
+    vals$state_toner<-0
+    vals$state_sunscreen<-0
+    vals$moisturizer<-""
+    vals$cleanser<-""
+    vals$exfoliater<-""
+    vals$serum<-""
+    vals$toner<-""
+    vals$sunscreen<-""
+    vals$score<-0
+    vals$selectedcount<-6
+    # remove all non-alpha numeric characters from the string, then remove the letters to leave the numbers
+    vals$budget <- as.numeric(gsub("[^0-9]", "", str_replace_all(input$wallet, "[^[:alnum:]]", "")))
+    if (is.na(vals$budget)){
+      vals$budget <- 0
+    }
+  })
+  
+  # observe confirm create avatar
+  observeEvent(input$createConfirm, {
+    print("Avatar creation confirmed")
+    
+    vals$gender <- input$selectGender
+    vals$skintype <- input$selectSkin
+    
+    print(paste0("Attributes: ", vals$skintype))
+    updateTabsetPanel(session, inputId="tabs", selected="shop")
+  })
+  
+  # observe button click to change to Avatar page
+  observeEvent(input$changeAvatar, {
+    print("Returning to avatar creation")
+    updateTabsetPanel(session, inputId="tabs", selected="start")
+  })
+  
+  # observe button click to change to Shopping page
+  observeEvent(input$changeShoppingList, {
+    print("Returning to shopping page")
+    updateTabsetPanel(session, inputId="tabs", selected="shop")
+    vals$moisturizer_order=0
+    vals$cleanser_order=0
+    vals$exfoliater_order=0
+    vals$serum_order=0
+    vals$toner_order=0
+    vals$sunscreen_order=0
+    vals$score=0
+    vals$actioncount <- 0
+    vals$notdone <- NULL
+    
+  })
+  
+  # observe button click to change to facescore page
+  observeEvent(input$confirmproducts, {
+    print("Proceding to interact")
+    updateTabsetPanel(session, inputId="tabs", selected="interact")
+    
+    listoforders <- c(vals$moisturizer, vals$cleanser, vals$exfoliater, vals$serum, vals$toner, vals$sunscreen)
+    listoforders <- listoforders[listoforders != ""]
+    vals$listoforders <- listoforders
+    buttonlist <- c("moisturizerbtn", "cleanserbtn", "exfoliaterbtn", "serumbtn", "tonerbtn", "sunscreenbtn")
+    vals$selectedcount <- length(listoforders)
+    print(paste0(vals$selectedcount, " product categories selected"))
+
+    
+    if (length(listoforders) == 0 ){
+      output$ordering <- renderUI({
+        box("There is nothing inside your cart")
+      })
+    }else{
+      listoforders2 <- c(vals$moisturizer, vals$cleanser, vals$exfoliater, vals$serum, vals$toner, vals$sunscreen)
+      output$ordering <- renderUI({
+        box(lapply(which(!(listoforders2 %in% c(""))), function(i) {
+          actionButton(buttonlist[[i]], listoforders2[[i]],width = 100)
+          }),
+          h3(" "),
+          actionButton("undobtn", "Undo previous action", style="color: #fff; background-color: #337ab7; border-color: #2e6da4")
+          )
+        })
+      }
+  })
+  
+  # observe undo apply btn
+  observeEvent(input$undobtn, {
+    if (vals$actioncount > 1) {
+      print("Undoing last action!")
+      vals$lastclicked <- vals$historydf$lastclicked[nrow(vals$historydf)]
+      
+      vals$historydf <- vals$historydf[-nrow(vals$historydf),]
+      
+      vals$moisturizer_order <- vals$historydf$moisturizer_order[nrow(vals$historydf)]
+      vals$cleanser_order <- vals$historydf$cleanser_order[nrow(vals$historydf)]
+      vals$exfoliater_order <- vals$historydf$exfoliater_order[nrow(vals$historydf)]
+      vals$serum_order <- vals$historydf$serum_order[nrow(vals$historydf)]
+      vals$toner_order <- vals$historydf$toner_order[nrow(vals$historydf)]
+      vals$sunscreen_order <- vals$historydf$sunscreen_order[nrow(vals$historydf)]
+      
+      vals$score <- vals$historydf$score[nrow(vals$historydf)]
+      print(vals$historydf)
+      
+      shinyjs::enable(vals$lastclicked)
+      vals$actioncount = vals$actioncount - 1
+      print(paste0("actioncount: ", vals$actioncount))
+    } else {
+      vals$lastclicked <- vals$historydf$lastclicked[nrow(vals$historydf)]
+      vals$historydf <- prephistory()
+      vals$score <- 0
+      vals$actioncount <- 0
+      vals$moisturizer_order=0
+      vals$cleanser_order=0
+      vals$exfoliater_order=0
+      vals$serum_order=0
+      vals$toner_order=0
+      vals$sunscreen_order=0
+      
+      print(vals$historydf)
+      print(paste0("actioncount: ", vals$actioncount))
+      
+      shinyjs::enable(vals$lastclicked)
+      
+      }
+  })
+  
+  # observe apply products
+  observeEvent(input$moisturizerbtn,{
+    vals$moisturizer_order <- 1
+    vals$moisturizer_order <- sum(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                                  vals$serum_order, vals$toner_order, vals$sunscreen_order)!=0)
+    print(paste0("moisturizer order: ", vals$moisturizer_order))
+    
+    productscore <- getProductScore(vals$moisturizer)
+    category <- "moisturizer"
+    order <- vals$moisturizer_order
+    orderscore <- getOrderScore(category, order)
+    print(paste0(category, " order score: ", orderscore))
+    print(paste0("moisturizer score: ", productscore))
+    vals$score <- vals$score + productscore + orderscore
+    vals$lastclicked <- "moisturizerbtn"
+    shinyjs::disable("moisturizerbtn")
+    
+    #storing in history
+    actioncount = max(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order))
+    
+    add_to_history <- c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order, 
+                        vals$score, actioncount, vals$lastclicked)
+    vals$historydf[actioncount,] <-  add_to_history
+    vals$actioncount <- actioncount
+    
+    print(vals$historydf)
+    
+ })
+  
+  observeEvent(input$cleanserbtn,{
+    vals$cleanser_order <- 1
+    vals$cleanser_order <- sum(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                                 vals$serum_order, vals$toner_order, vals$sunscreen_order)!=0)
+    print(paste0("cleanser order: ", vals$cleanser_order))
+    
+    category <- "cleanser"
+    order <- vals$cleanser_order
+    orderscore <- getOrderScore(category, order)
+    print(paste0(category, " order score: ", orderscore))
+    productscore <- getProductScore(vals$cleanser)
+    print(paste0("cleanser score: ", productscore))
+    vals$score <- vals$score + productscore + orderscore
+    vals$lastclicked <- "cleanserbtn"
+    shinyjs::disable("cleanserbtn")
+    
+    #storing in history
+    actioncount = max(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order))
+    add_to_history <- c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order, 
+                        vals$score, actioncount, vals$lastclicked)
+    vals$historydf[actioncount,] <-  add_to_history
+    vals$actioncount <- actioncount
+    
+    print(vals$historydf)
+  })
+  
+  observeEvent(input$exfoliaterbtn,{
+    vals$exfoliater_order <- 1
+    vals$exfoliater_order <- sum(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                                   vals$serum_order, vals$toner_order, vals$sunscreen_order)!=0)
+    print(paste0("exfoliater order: ", vals$exfoliater_order))
+    
+    category <- "exfoliater"
+    order <- vals$exfoliater_order
+    orderscore <- getOrderScore(category, order)
+    print(paste0(category, " order score: ", orderscore))
+    productscore <- getProductScore(vals$exfoliater)
+    print(paste0("exfoliater score: ", productscore))
+    vals$score <- vals$score + productscore + orderscore
+    vals$lastclicked <- "exfoliaterbtn"
+    shinyjs::disable("exfoliaterbtn")
+    
+    #storing in history
+    actioncount = max(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order))
+    add_to_history <- c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order, 
+                        vals$score, actioncount, vals$lastclicked)
+    vals$historydf[actioncount,] <-  add_to_history
+    vals$actioncount <- actioncount
+    
+    print(vals$historydf)
+  })
+  
+  observeEvent(input$serumbtn,{
+    vals$serum_order <- 1
+    vals$serum_order <- sum(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                              vals$serum_order, vals$toner_order, vals$sunscreen_order)!=0)
+    print(paste0("serum order: ", vals$serum_order))
+    
+    category <- "serum"
+    order <- vals$serum_order
+    orderscore <- getOrderScore(category, order)
+    print(paste0(category, " order score: ", orderscore))
+    productscore <- getProductScore(vals$serum)
+    print(paste0("serum score: ", productscore))
+    vals$score <- vals$score + productscore + orderscore
+    vals$lastclicked <- "serumbtn"
+    shinyjs::disable("serumbtn")
+    
+    #storing in history
+    actioncount = max(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order))
+    add_to_history <- c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order, 
+                        vals$score, actioncount, vals$lastclicked)
+    vals$historydf[actioncount,] <-  add_to_history
+    vals$actioncount <- actioncount
+    
+    print(vals$historydf)
+  })
+  
+  observeEvent(input$tonerbtn,{
+    vals$toner_order <- 1
+    vals$toner_order <- sum(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                              vals$serum_order, vals$toner_order, vals$sunscreen_order)!=0)
+    print(paste0("toner order: ", vals$toner_order))
+    
+    category <- "toner"
+    order <- vals$toner_order
+    orderscore <- getOrderScore(category, order)
+    print(paste0(category, " order score: ", orderscore))
+    productscore <- getProductScore(vals$toner)
+    print(paste0("toner score: ", productscore))
+    vals$score <- vals$score + productscore + orderscore
+    vals$lastclicked <- "tonerbtn"
+    shinyjs::disable("tonerbtn")
+    
+    #storing in history
+    actioncount = max(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order))
+    add_to_history <- c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order, 
+                        vals$score, actioncount, vals$lastclicked)
+    vals$historydf[actioncount,] <-  add_to_history
+    vals$actioncount <- actioncount
+    
+    print(vals$historydf)
+  })
+  
+  observeEvent(input$sunscreenbtn,{
+    vals$sunscreen_order <- 1
+    vals$sunscreen_order <- sum(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                                  vals$serum_order, vals$toner_order, vals$sunscreen_order)!=0)
+    print(paste0("sunscreen order: ", vals$sunscreen_order))
+    
+    category <- "sunscreen"
+    order <- vals$sunscreen_order
+    orderscore <- getOrderScore(category, order)
+    print(paste0(category, " order score: ", orderscore))
+    productscore <- getProductScore(vals$sunscreen)
+    print(paste0("sunscreen score: ", productscore))
+    vals$score <- vals$score + productscore + orderscore
+    vals$lastclicked <- "sunscreenbtn"
+    shinyjs::disable("sunscreenbtn")
+    
+    #storing in history
+    actioncount = max(c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order))
+    add_to_history <- c(vals$moisturizer_order, vals$cleanser_order, vals$exfoliater_order,
+                        vals$serum_order, vals$toner_order, vals$sunscreen_order, 
+                        vals$score, actioncount, vals$lastclicked)
+    vals$historydf[actioncount,] <-  add_to_history
+    vals$actioncount <- actioncount
+    
+    print(vals$historydf)
+  })
+  
+  # Modal to edit cart
+  editcartModal <- function(){
+    itemlist <- c(vals$moisturizer, vals$cleanser, vals$exfoliater, vals$serum, vals$toner, vals$sunscreen)
+    modalDialog(
+      selectInput("cartlist", "Your current cart:", itemlist),
+      footer = tagList(
+        actionButton("refunditem", "Refund Item"),
+        modalButton("Cancel"))
+    )
+  }
+  
+  # observes when clicking on refund button
+  observeEvent(input$refunditem,{
+    itemlist <- c(vals$moisturizer, vals$cleanser, vals$exfoliater, vals$serum, vals$toner, vals$sunscreen)
+      print(itemlist)
+      for (i in 1:length(itemlist)){
+        if (input$cartlist == itemlist[i] && input$cartlist != ""){
+          vals$budget <- vals$budget + getProductPrice(input$cartlist)
+          if (i == 1){
+            vals$moisturizer <- ""
+            vals$state_moisturizer <- 0
+            
+          }else if (i == 2){
+            vals$cleanser <- ""
+            vals$state_cleanser <- 0
+            
+          }else if (i == 3){
+            vals$exfoliater <- ""
+            vals$state_exfoliater <- 0
+            
+          }else if (i == 4){
+            vals$serum <- ""
+            vals$state_serum <- 0
+            
+          }else if (i == 5){
+            vals$toner <- ""
+            vals$state_toner <- 0
+            
+          }else{
+            vals$sunscreen <- ""
+            vals$state_sunscreen <- 0
+          }
+        }
+    }
+    removeModal()
+  })
+  
+  # Modal to show description, ingredients of item in selectinput
+  observeEvent(input$moreinfo, {
+    moreinfoModal <- function(){
+      modalDialog(
+        h2(input$productselection),
+        h3(getProductDescription(input$productselection)),
+        h4(paste0("Price of Product is: $",getProductPrice(input$productselection))),
+        h4(paste0("Your current budget:$",(vals$budget))),
+        easyClose = TRUE,
+        footer = NULL
+      )
+    }
+    showModal(moreinfoModal())
+  })
+  
+  # Modal to show description, ingredients of chosen item in cart
+  observeEvent(input$product1,{
+    if (vals$moisturizer != ""){
+      moreinfoModal2 <- function(){
+        modalDialog(
+          h2(vals$moisturizer),
+          h3(getProductDescription(vals$moisturizer)),
+          easyClose = TRUE,
+          footer = NULL
+        )}
+        showModal(moreinfoModal2())
+    }else {
+      showModal(emptyModal())
+    }
+    })
+  
+  observeEvent(input$product2,{
+    if (vals$cleanser != ""){
+      moreinfoModal <- function(){
+        modalDialog(
+          h2(vals$cleanser),
+          h3(getProductDescription(vals$cleanser)),
+          easyClose = TRUE,
+          footer = NULL
+        )}
+        showModal(moreinfoModal())
+    }else {
+      showModal(emptyModal())
+    }
+  })  
+  
+  observeEvent(input$product3,{
+    if (vals$exfoliater != ""){
+      moreinfoModal <- function(){
+        modalDialog(
+          h2(vals$exfoliater),
+          h3(getProductDescription(vals$exfoliater)),
+          easyClose = TRUE,
+          footer = NULL
+        )}
+        showModal(moreinfoModal())
+    }else {
+      showModal(emptyModal())
+    }
+  })  
+  
+  observeEvent(input$product4,{
+    if (vals$serum != ""){
+      moreinfoModal <- function(){
+        modalDialog(
+          h2(vals$serum),
+          h3(getProductDescription(vals$serum)),
+          easyClose = TRUE,
+          footer = NULL
+        )}
+        showModal(moreinfoModal())
+    }else {
+      showModal(emptyModal())
+    }
+  })  
+  
+  observeEvent(input$product5,{
+    if (vals$toner != ""){
+      moreinfoModal <- function(){
+        modalDialog(
+          h2(vals$toner),
+          h3(getProductDescription(vals$toner)),
+          easyClose = TRUE,
+          footer = NULL
+        )}
+        showModal(moreinfoModal())
+    }else {
+      showModal(emptyModal())
+    }
+  })  
+  
+  observeEvent(input$product6,{
+    if (vals$sunscreen != ""){
+      moreinfoModal <- function(){
+        modalDialog(
+          h2(vals$sunscreen),
+          h3(getProductDescription(vals$sunscreen)),
+          easyClose = TRUE,
+          footer = NULL
+        )}
+        showModal(moreinfoModal())
+    }else {
+      showModal(emptyModal())
+    }
+  }) 
+  
+  # insert helper function for insertUI()
+  insert <- function(category,skintype){
+    insertUI(
+      selector = "#test",
+      where = "afterEnd",
+      ui = column(width=7, id="toremove",
+                  h3(paste0("What is a ", category, "?")),
+                  h4(getCategoryDetails(category)),
+                  h4("Here is a list of products to choose from:"),
+                  br(),
+                  box(
+                    width = 10,
+                    selectInput("productselection", "Select a product", choices = getProductList(category,skintype)[,4]),
+                    actionButton("moreinfo", "View item description"),
+                    actionButton(paste0("purchase", category) ,"Purchase")
+                  )
+      )
+    )
+  }
+
+  # observes clicking on category image buttons
+  observeEvent(input$moisturizer, {
+    print("Moisturizer selected")
+    if (vals$state_moisturizer==0) {
+      category <- "moisturizer"
+      if (vals$occupied==0) {
+        print("inserting UI")
+        insert(category,vals$skintype)
+        vals$occupied <- 1
+      } else if (vals$occupied==1) {
+        print("removing UI")
+        removeUI(selector = "#toremove")          
+        print("inserting UI")
+        insert(category,vals$skintype)
+      } 
+    } else {
+      showModal(duplicateModal())
+    }
+  })  
+  
+  observeEvent(input$cleanser, {
+    print("Cleanser selected")
+    if (vals$state_cleanser==0) {
+      category <- "cleanser"
+      if (vals$occupied==0) {
+        print("inserting UI")
+        insert(category,vals$skintype)
+        vals$occupied <- 1
+      } else if (vals$occupied==1) {
+        print("removing UI")
+        removeUI(selector = "#toremove")          
+        print("inserting UI")
+        insert(category,vals$skintype)
+      } 
+    } else {
+      showModal(duplicateModal())
+    }
+  })  
+  
+  observeEvent(input$exfoliater, {
+    print("Exfoliater selected")
+    if (vals$state_exfoliater==0) {
+      category <- "exfoliater"
+      if (vals$occupied==0) {
+        print("inserting UI")
+        insert(category,vals$skintype)
+        vals$occupied <- 1
+        
+      } else if (vals$occupied==1) {
+        print("removing UI")
+        removeUI(selector = "#toremove")          
+        print("inserting UI")
+        insert(category,vals$skintype)
+      } 
+    } else {
+      showModal(duplicateModal())
+    }
+  })
+  
+  observeEvent(input$serum, {
+    print("Serum selected")
+    if (vals$state_serum==0) {
+      category <- "serum"
+      if (vals$occupied==0) {
+        print("inserting UI")
+        insert(category,vals$skintype)
+        vals$occupied <- 1
+        
+      } else if (vals$occupied==1) {
+        print("removing UI")
+        removeUI(selector = "#toremove")          
+        print("inserting UI")
+        insert(category,vals$skintype)
+      } 
+    } else {
+      showModal(duplicateModal())
+    }
+  })
+  
+  observeEvent(input$toner, {
+    print("Toner selected")
+    if (vals$state_toner==0) {
+      category <- "toner"
+      if (vals$occupied==0) {
+        print("inserting UI")
+        insert(category,vals$skintype)
+        vals$occupied <- 1
+        
+      } else if (vals$occupied==1) {
+        print("removing UI")
+        removeUI(selector = "#toremove")          
+        print("inserting UI")
+        insert(category,vals$skintype)
+      } 
+    } else {
+      showModal(duplicateModal())
+    }
+  })
+  
+  observeEvent(input$sunscreen, {
+    print("Mask selected")
+    if (vals$state_sunscreen==0) {
+      category <- "sunscreen"
+      if (vals$occupied==0) {
+        print("inserting UI")
+        insert(category,vals$skintype)
+        vals$occupied <- 1
+        
+      } else if (vals$occupied==1) {
+        print("removing UI")
+        removeUI(selector = "#toremove")          
+        print("inserting UI")
+        insert(category,vals$skintype)
+      } 
+    } else {
+      showModal(duplicateModal())
+    }
+  })
+  
+  # Reacts to clicking Purchase 
+  observeEvent(input$purchasemoisturizer,{
+    if (vals$budget > 0 && vals$state_moisturizer == 0) {
+      vals$budget <- vals$budget - getProductPrice(input$productselection)
+      print(vals$budget)
+      print("purchased")
+    } else {
+      showModal(duplicateModal())
+    }
+    vals$state_moisturizer <- 1
+    vals$moisturizer <- input$productselection
+    print(paste0(vals$moisturizer, " purchased for moisturizer category"))
+    
+  })
+   
+  observeEvent(input$purchasecleanser,{
+    if (vals$budget > 0 && vals$state_cleanser == 0) {
+      vals$budget <- vals$budget - getProductPrice(input$productselection)
+      print(vals$budget)
+      print("purchased")
+    } else {
+      showModal(duplicateModal())
+    }
+    vals$state_cleanser <- 1
+    vals$cleanser <- input$productselection
+    print(paste0(vals$cleanser, " purchased for cleanser category"))
+  
+  })
+  
+  observeEvent(input$purchaseexfoliater,{
+    if (vals$budget > 0 && vals$state_exfoliater == 0) {
+      vals$budget <- vals$budget - getProductPrice(input$productselection)
+      print(vals$budget)
+      print("purchased")
+    } else {
+      showModal(duplicateModal())
+    }
+    vals$state_exfoliater <- 1
+    vals$exfoliater <- input$productselection
+    print(paste0(vals$exfoliater, " purchased for exfoliater category"))
+    
+  })
+  
+  observeEvent(input$purchaseserum,{
+    if (vals$budget > 0 && vals$state_serum == 0) {
+      vals$budget <- vals$budget - getProductPrice(input$productselection)
+      print(vals$budget)
+      print("purchased")
+    } else {
+      showModal(duplicateModal())
+    }    
+    vals$state_serum <- 1
+    vals$serum <- input$productselection
+    print(paste0(vals$serum, " purchased for serum category"))
+    
+  })
+  
+  observeEvent(input$purchasetoner,{
+    if (vals$budget > 0 && vals$state_toner == 0) {
+      vals$budget <- vals$budget - getProductPrice(input$productselection)
+      print(vals$budget)
+      print("purchased")
+    } else {
+      showModal(duplicateModal())
+    }
+    vals$state_toner <- 1
+    vals$toner <- input$productselection
+    print(paste0(vals$toner, " purchased for toner category"))
+    
+  })
+  
+  observeEvent(input$purchasesunscreen,{
+    if (vals$budget > 0 && vals$state_sunscreen == 0) {
+      vals$budget <- vals$budget - getProductPrice(input$productselection)
+      print(vals$budget)
+      print("purchased")
+    } else {
+      showModal(duplicateModal())
+    }
+    vals$state_sunscreen <- 1
+    vals$sunscreen <- input$productselection
+    print(paste0(vals$sunscreen, " purchased for sunscreen category"))
+    
+  })
+  
+  # edit cart 
+  observeEvent(input$editcart, {
+    showModal(editcartModal())
+  })
+  
+  # Renders out the reactive value of the facescore
+  output$facescore <- renderUI({
+    paste(vals$score)
+  })
+  
+  # Renders out the reactive value of the budget in UI
+  output$budget <- renderUI({
+    numclicks <- input$purchasemoisturizer #ensure refresh after every purchase
+    strong(paste0("Your Current budget is: $",vals$budget))
+  })
+  
+  # Renders out the reactive value of the skin description in UI
+  output$skindesc <- renderUI({
+    numclicks <- input$selectSkin #ensure refresh after every skintype selection
+    paste(getSkinDescription(vals$skintype))
+  })
+  
+  # Continuously observe reactive values for end game state condition
+  observe({
+    if(vals$actioncount == vals$selectedcount && length(vals$listoforders)>0) {
+      showModal(finishModal(vals$listoforders, vals$score, vals$historydf))
+      }
+  })
+  
+  # observe endgame replay btn to change to starting avatar page
+  observeEvent(input$replaybtn, {
+    print("Restarting game")    
+    removeModal()
+    updateTabsetPanel(session, inputId="tabs", selected="start")
+
+    shinyjs::reset("wallet")
+    
+    vals$state_moisturizer=0
+    vals$state_cleanser=0
+    vals$state_exfoliater=0
+    vals$state_serum=0
+    vals$state_toner=0
+    vals$state_sunscreen=0
+    vals$moisturizer=""
+    vals$cleanser=""
+    vals$exfoliater=""
+    vals$serum=""
+    vals$toner=""
+    vals$sunscreen=""
+    vals$historydf=prephistory()
+    vals$listoforders=NULL
+    vals$score=0
+    vals$budget=0
+    vals$lastclicked=NULL
+    vals$actioncount=0
+    vals$selectedcount=6
+    vals$moisturizer_order=0
+    vals$cleanser_order=0
+    vals$exfoliater_order=0
+    vals$serum_order=0
+    vals$toner_order=0
+    vals$sunscreen_order=0
+    vals$randomnumber=0
+  })
+  
+  observeEvent(input$notdonebtn, {
+    removeModal()
+
+    print(vals$actioncount)
+    print(vals$selectedcount)
+  })
+
+}
+  
+shinyApp(ui, server)
+  
+
