@@ -17,6 +17,18 @@ Note the MySQL database was hosted on AWS RDS which has been terminated. Further
 ```bash
 ├───Glow Up Application
 └───Project Deliverables
+    ├───01 Cover Page
+    ├───02 Mission Statement
+    ├───03 User Characteristics
+    ├───04 Situation Maps
+    ├───05 Mind Maps
+    ├───06 Concept Sketches
+    ├───07 Concept Selection
+    ├───08 Operational Concept
+    ├───09 Use Cases
+    ├───10 Use Case Analysis
+    ├───11 Logical Architecture
+    └───12 Project Plan
 ```
 
 1. **Glow Up Application:** Contain the source code for our application
